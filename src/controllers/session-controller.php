@@ -4,11 +4,6 @@
  */ 
 class SessionController extends ControllerBase
 {
-  private function createHash($password)
-  {
-    return hash('md5', $password);
-  }
-
   // Get all sessions from db
   // URL: /api/session/active
   public function active()
@@ -30,13 +25,13 @@ class SessionController extends ControllerBase
     $session->setName($data["name"]);
     $session->setCardSet($data["cardSet"]);
 
+    // Generate the access token and assign it to the session
     $private = $data["isPrivate"];
     $session->setIsPrivate($private);
     if ($private)
-      $session->setPassword($this->createHash($data["password"]));
-
-    // Generate the access token and assign it to the session
-    $token = bin2hex(random_bytes(8));
+      $token = $this->createHash($data["name"], $data["password"]);
+    else
+      $token = $this->createHash($data["name"], bin2hex(random_bytes(8)));   
     $session->setToken($token);
       
     $session->setLastAction(new DateTime());
@@ -73,17 +68,22 @@ class SessionController extends ControllerBase
     $token = $session->getToken();
     $tokenKey = $this->tokenKey($session->getId());
 
-    // Check if token was passed
-    if(isset($_GET["token"]) && $_GET["token"] == $token) {
+    // This blocks checks different ways to be granted access
+    if(isset($_COOKIE[$tokenKey]) && $_COOKIE[$tokenKey] == $token) {
+      // Or the user already has the token so we do nothing and continue
+    } else if(isset($_GET["token"]) && $_GET["token"] == $token) {
+      // User supplied the token
       $this->setCookie($session);
-    // Or the password
-    } else if(isset($data["password"]) && $session->getPassword() === $this->createHash($data["password"])) {
+    } else if(isset($data["password"]) && $token === $this->createHash($session->getName(), $data["password"])) {
+      // Or the password
       $this->setCookie($session);
-    // Or the user already has the token
-    } else if(isset($_COOKIE[$tokenKey]) && $_COOKIE[$tokenKey] == $token) {
-      // Do nothing and continue
+    } else if ($session->getIsPrivate() == false) {
+      // Tokens are only required to join private sessions,
+      // but without the token the rights are restricted by a member-only token
+      $memberToken = $this->createHash($name, $token);
+      $this->setCookie($session, $memberToken);
     } else {
-      return null;
+      return;
     }
     
     // Check for existing member
@@ -116,15 +116,19 @@ class SessionController extends ControllerBase
   // Remove member from session
   private function removeMember($id)
   {
-    include __DIR__ .  "/session-evaluation.php";
+    // Get member and session
+    $member = $this->getMember($id); 
+    $session = $member->getSession();
 
-    // Get and remove member
-    $member = $this->getMember($id);    
+    if (!$this->verifyToken($session, $member->getName()))
+      return;
+
+    // Get and remove member       
     $this->entityManager->remove($member);
     $this->entityManager->flush();
 
-    // Get the members session and its current poll
-    $session = $member->getSession();
+    // Reevaluate the current poll
+    include __DIR__ .  "/session-evaluation.php";
     $poll = $session->getCurrentPoll();
     if($poll !== null && SessionEvaluation::evaluatePoll($session, $poll))
     {
@@ -166,9 +170,9 @@ class SessionController extends ControllerBase
   {
     $data = $this->jsonInput();
     $session = $this->getSession($id);
-    $result = $session->getPassword() === $this->createHash($data["password"]);
+    $result = $session->getToken() === $this->createHash($session->getName(), $data["password"]);
 
-    // If the correct password was transmitted we also assign the token
+    // If the correct password was transmitted we grant the token as a reward
     if ($result)
       $this->setCookie($session);
 
@@ -192,10 +196,14 @@ class SessionController extends ControllerBase
 
   // Set the token cookie for this session 
   // with additional parameters for expiration and path
-  private function setCookie($session)
+  private function setCookie($session, $token = null)
   {
     $tokenKey = $this->tokenKey($session->getId());
-    setcookie($tokenKey, $session->getToken(), time()+60*60*24*30, "/");
+
+    if ($token == null)
+      $token = $session->getToken();
+
+    setcookie($tokenKey, $token, time()+60*60*24*30, "/");
   }
 }
 
