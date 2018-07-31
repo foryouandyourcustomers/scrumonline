@@ -68,9 +68,9 @@ class SessionController extends ControllerBase
     $token = $session->getToken();
     $tokenKey = $this->tokenKey($session->getId());
 
-    // This blocks checks different ways to be granted access
+    // This blocks check different ways to be granted access
     if(isset($_COOKIE[$tokenKey]) && $_COOKIE[$tokenKey] == $token) {
-      // Or the user already has the token so we do nothing and continue
+      // The user already has the token so we do nothing and continue
     } else if(isset($_GET["token"]) && $_GET["token"] == $token) {
       // User supplied the token
       $this->setCookie($session);
