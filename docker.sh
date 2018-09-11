@@ -7,7 +7,8 @@ image=scrum-lamp
 case $command in 
   "prepare")
      echo "Preparing repository for usage with docker"
-     php bin/composer install
+     docker run --rm -ti -v $PWD:/data -w /data --entrypoint=/data/docker/run_compose.sh php:5.6
+     #php bin/composer install
      cp src/sample-config.php src/config.php
      # Overwrite host
      echo '$host = "localhost:8080";' >> src/config.php
