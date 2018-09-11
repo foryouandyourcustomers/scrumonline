@@ -6,10 +6,10 @@ add-apt-repository -y ppa:ondrej/php
 
 apt-get update
 
-apt-get install -y cachefilesd
+apt-get install -y --force-yes cachefilesd
 echo "RUN=yes" > /etc/default/cachefilesd
 
-apt-get install -y apache2 git zip
+apt-get install -y --force-yes apache2 git zip
 a2enmod rewrite
 a2enmod headers
 
@@ -26,7 +26,7 @@ service mysql restart
 
 mysqladmin create scrum_online -u root -ppasswd
 
-apt-get install -y php5.6 php5.6-curl php5.6-mysql php5.6-intl php5.6-mbstring php5.6-dev
+apt-get install -y --force-yes php5.6 php5.6-curl php5.6-mysql php5.6-intl php5.6-mbstring php5.6-dev
 
 update-alternatives --set php /usr/bin/php5.6
 
