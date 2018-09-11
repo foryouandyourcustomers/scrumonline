@@ -1,0 +1,220 @@
+---
+
+#
+# setup a test ec2 instance with custom sec group and IAM instance profile
+# you need boto 2.5+ and ansible 2.3+ installed.
+# 
+# run it with my fyayc aws profile
+# https://docs.aws.amazon.com/cli/latest/userguide/cli-multiple-profiles.html
+# AWS_PROFILE=fyayc ansible-playbook ec2.yml
+#
+# to cleanup execute with the tag "delete"
+# AWS_PROFILE=fyayc ansible-playbook ec2.yml -t delete
+
+- name: Provision an EC2 instance with custom Security Group and IAM Role
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    name: ec-141
+    description: scrumonline poker
+    # aws vpc
+    aws_vpc_id: vpc-6425280c
+    # ec2 info
+    ec2_region: eu-west-1
+    ec2_subnet_id: subnet-8c8254fb
+    ec2_key_name: "seh"
+    ec2_instance_type: "t2.micro"
+    ec2_public_ip: true
+    # ec2 ami info
+    ec2_ami: "ami-0967cc5ba5bc121c3"
+    # centos ami owner 
+    # centos_ami_owner: "679593333241"
+    # centos_ami_name: "CentOS Linux 7 x86_64 HVM EBS*"
+    # centos_ami_arch: "x86_64"
+    # centos_ami_device: "ebs"
+    # dns configuration for public dns name
+    route53_zoneid: Z3QPVK3M34PXH2
+    route53_zone: fyycops.fyayc.com
+    route53_arecord: scrumonline
+  tasks:
+
+    #
+    # creation of aws ressources
+    #
+
+
+    # lets do some ansible magic
+    # if the ec2_ami variable is not set or empty we try to get the ami id
+    - block:
+        # 2018-08-26: thanks a ton: http://cavaliercoder.com/blog/finding-the-latest-centos-ami.html
+        # we can use ec2_ami_facts to retrieve information about amis.
+        # we search for amis in the same region as the ec2 instance will be created
+        # and we look for centos images (see the blog post linked above)
+        - name: Retrieve Centos AMI images
+          ec2_ami_facts:
+            region: "{{ec2_region}}"
+            owners: "{{centos_ami_owner}}"
+            filters:
+              name: "{{centos_ami_name}}"
+              architecture: "{{centos_ami_arch}}"
+              root-device-type: "{{centos_ami_device}}"
+          # the output of the command is registered in the variable 'ami'
+          register: ami
+
+        # with the ami variable set we first make sure to sort the images list
+        # by creation_date (latest image will be last in list)
+        # then we use json_query to get the image id from the last element in the list
+        - name: Set latest centos ami image variable
+          set_fact: ec2_ami="{{ ami.images | sort(attribute='creation_date') | json_query('[-1].image_id')}}"
+      when: not ec2_ami
+
+    - name: Create IAM Role
+      iam_role:
+        name: "{{name}}-ec2-iam-role"
+        assume_role_policy_document: |
+          {
+            "Version": "2008-10-17",
+            "Statement": [
+              {
+                "Sid": "",
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "ec2.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          }
+        state: present
+      register: iam_role
+
+    - name: iam role return values
+      debug: var=iam_role
+
+    - name: Create IAM Policy
+      iam_policy:
+        iam_name: "{{name}}-ec2-iam-role"
+        iam_type: role
+        policy_name: "{{name}}-ec2-iam-policy"
+        policy_json: |
+          {
+            "Statement": [
+              {
+                "Action": [
+                  "ec2:DescribeInstances"
+                ],
+                "Effect": "Allow",
+                "Resource": [
+                  "*"
+                ]
+              }
+            ],
+            "Version": "2012-10-17"
+          }
+        state: present
+      register: iam_policy
+
+    - name: iam policy return values
+      debug: var=iam_policy
+
+    - name: Create Security Group
+      ec2_group:
+        name: "{{name}}-ec2-security-group"
+        description: "ansible sec group test"
+        vpc_id: "{{aws_vpc_id}}"
+        region: "{{ec2_region}}"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+        state: present
+      register: security_group
+
+    - name: security group return values
+      debug: var=security_group
+
+    - name: Create EC2 Instance
+      ec2_instance:
+        key_name: "{{ec2_key_name}}"
+        instance_type: "{{ec2_instance_type}}"
+        image_id: "{{ec2_ami}}"
+        wait: true
+        vpc_subnet_id: "{{ec2_subnet_id}}"
+        network:
+          assign_public_ip: "{{ec2_public_ip}}"
+        region: "{{ec2_region}}"
+        name: "{{name}} ({{description}})"
+        instance_role: "{{name}}-ec2-iam-role"
+        security_group: "{{name}}-ec2-security-group"
+        state: present
+      register: ec2_instance
+
+    - name: ec2 instance return values
+      debug: var=ec2_instance
+
+    - name: Create DNS record
+      route53:
+        state: present
+        zone: "{{route53_zone}}"
+        record: "{{route53_arecord}}.{{route53_zone}}"
+        type: A
+        ttl: 300
+        value: "{{ec2_instance.instances[0].public_ip_address}}"
+        wait: yes
+      register: route53_entry
+
+    - name: route53 return values
+      debug: var=route53_entry
+
+    #
+    # removal of aws resources
+    #
+    - name: Remove EC2 instance
+      ec2_instance:
+        name: "{{name}} ({{description}})"
+        vpc_subnet_id: "{{ec2_subnet_id}}"
+        wait: true
+        state: terminated
+      tags: [ 'never', 'delete' ]
+
+    - name: Remove Security Group
+      ec2_group:
+        name: "{{name}}-ec2-security-group"
+        state: absent
+      tags: [ 'never', 'delete' ]
+
+    - name: Remove IAM Policy
+      iam_policy:
+        iam_name: "{{name}}-ec2-iam-role"
+        policy_name: "{{name}}-ec2-iam-policy"
+        iam_type: role
+        state: absent
+      tags: [ 'never', 'delete' ]
+
+    - name: Remove IAM Role
+      iam_role:
+        name: "{{name}}-ec2-iam-role"
+        state: absent
+      tags: [ 'never', 'delete' ]
+
+    - name: Get DNS record facts
+      route53:
+        state: get
+        zone: "{{route53_zone}}"
+        record: "{{route53_arecord}}.{{route53_zone}}"
+        type: A
+      register: rec
+      tags: [ 'never', 'delete' ]
+
+    - name: Remove dns record
+      route53:
+        state: absent
+        zone: "{{route53_zone}}"
+        record: "{{ rec.set.record }}"
+        ttl: "{{ rec.set.ttl }}"
+        type: "{{ rec.set.type }}"
+        value: "{{ rec.set.value }}"
+      tags: [ 'never', 'delete' ]
