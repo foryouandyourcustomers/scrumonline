@@ -5,4 +5,4 @@ proxies/
 .vagrant/
 mysql_db
 
-.retry
+*.retry
